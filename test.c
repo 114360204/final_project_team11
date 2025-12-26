@@ -1,269 +1,239 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <windows.h> 
 #include "cJSON.h" 
 #include <curl/curl.h>
 
-// --- å®šç¾©è³‡æ–™çµæ§‹ ---
-typedef struct {
-    char nameTW[50];   // é¡¯ç¤ºåç¨±
-    char nameAPI[50];  // æŸ¥è©¢åç¨±
-} City;
+#pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
-typedef struct {
-    char countryName[50]; 
-    City cities[30];      
-    int cityCount;        
-} Country;
+// --- ¸ê®Æµ²ºc ---
+typedef struct { char nameTW[50]; char nameAPI[50]; } City;
+typedef struct { char countryName[50]; City cities[30]; int cityCount; } Country;
 
-// --- å¤©æ°£è³‡è¨Šçµæ§‹ ---
 typedef struct {
     char city[50];
     double temperature;
     int humidity;
     char description[100];
+    char tomorrow_brief[512];
+    int aqi;
 } WeatherInfo;
 
-struct string {
-    char *ptr;
-    size_t len;
-};
-
-// --- åŸºç¤å·¥å…·å‡½å¼ ---
-void init_string(struct string *s) {
-    s->len = 0;
-    s->ptr = malloc(s->len + 1);
-    if (s->ptr == NULL) exit(EXIT_FAILURE);
-    s->ptr[0] = '\0';
-}
-
-size_t writefunc(void *ptr, size_t size, size_t nmemb, struct string *s) {
+// --- »²§U¨ç¦¡ ---
+struct string { char* ptr; size_t len; };
+void init_string(struct string* s) { s->len = 0; s->ptr = malloc(1); s->ptr[0] = '\0'; }
+size_t writefunc(void* ptr, size_t size, size_t nmemb, struct string* s) {
     size_t new_len = s->len + size * nmemb;
     s->ptr = realloc(s->ptr, new_len + 1);
-    if (s->ptr == NULL) exit(EXIT_FAILURE);
     memcpy(s->ptr + s->len, ptr, size * nmemb);
-    s->ptr[new_len] = '\0';
-    s->len = new_len;
+    s->ptr[new_len] = '\0'; s->len = new_len;
     return size * nmemb;
 }
 
-// â˜…è¨˜å¾—å¡«å…¥ä½ çš„ API Key
-const char* API_KEY = "2fa80dc7ec8be3fac297f88afd028de9"; 
+void UTF8ToANSI(char* src, char* dest, int destSize) {
+    wchar_t wStr[512];
+    MultiByteToWideChar(CP_UTF8, 0, src, -1, wStr, 512);
+    WideCharToMultiByte(CP_ACP, 0, wStr, -1, dest, destSize, NULL, NULL);
+}
+
+const char* API_KEY = "2fa80dc7ec8be3fac297f88afd028de9";
+
+// --- API ÅŞ¿è ---
+int getAQI(double lat, double lon) {
+    CURL* curl; struct string s; init_string(&s); curl = curl_easy_init();
+    char url[512]; sprintf(url, "http://api.openweathermap.org/data/2.5/air_pollution?lat=%f&lon=%f&appid=%s", lat, lon, API_KEY);
+    curl_easy_setopt(curl, CURLOPT_URL, url); curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc); curl_easy_setopt(curl, CURLOPT_WRITEDATA, &s);
+    int aqi = -1; if (curl_easy_perform(curl) == CURLE_OK) {
+        cJSON* json = cJSON_Parse(s.ptr); if (json) {
+            cJSON* list = cJSON_GetObjectItem(json, "list"); cJSON* first = cJSON_GetArrayItem(list, 0);
+            aqi = cJSON_GetObjectItem(cJSON_GetObjectItem(first, "main"), "aqi")->valueint; cJSON_Delete(json);
+        }
+    }
+    curl_easy_cleanup(curl); free(s.ptr); return aqi;
+}
+
+const char* getAQIDesc(int aqi) {
+    switch (aqi) {
+    case 1: return "Àu"; case 2: return "´¶³q"; case 3: return "»´«×¦Ã¬V";
+    case 4: return "¤¤«×¦Ã¬V"; case 5: return "­««×¦Ã¬V"; default: return "¥¼ª¾";
+    }
+}
 
 int getWeather(char* searchName, char* displayName, WeatherInfo* info) {
-    CURL *curl;
-    CURLcode res;
-    struct string s;
-    init_string(&s);
+    CURL* curl; struct string s; init_string(&s); curl = curl_easy_init();
+    if (!curl) return 0;
+    char* encodedName = curl_easy_escape(curl, searchName, 0);
+    char url[512]; sprintf(url, "http://api.openweathermap.org/data/2.5/forecast?q=%s&appid=%s&units=metric&lang=zh_tw", encodedName, API_KEY);
+    curl_free(encodedName);
+    curl_easy_setopt(curl, CURLOPT_URL, url); curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc); curl_easy_setopt(curl, CURLOPT_WRITEDATA, &s);
+    if (curl_easy_perform(curl) != CURLE_OK) { free(s.ptr); return 0; }
+    cJSON* json = cJSON_Parse(s.ptr); if (!json) { free(s.ptr); return 0; }
+    cJSON* city_obj = cJSON_GetObjectItem(json, "city"); cJSON* coord = cJSON_GetObjectItem(city_obj, "coord");
+    double lat = cJSON_GetObjectItem(coord, "lat")->valuedouble; double lon = cJSON_GetObjectItem(coord, "lon")->valuedouble;
+    cJSON* list = cJSON_GetObjectItem(json, "list"); cJSON* cur = cJSON_GetArrayItem(list, 0);
 
-    curl = curl_easy_init();
-    if(curl) {
-        char *encodedName = curl_easy_escape(curl, searchName, 0);
+    info->temperature = cJSON_GetObjectItem(cJSON_GetObjectItem(cur, "main"), "temp")->valuedouble;
+    info->humidity = cJSON_GetObjectItem(cJSON_GetObjectItem(cur, "main"), "humidity")->valueint;
+    strcpy(info->city, displayName);
+    UTF8ToANSI(cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(cur, "weather"), 0), "description")->valuestring, info->description, 100);
 
-        char url[512];
-        sprintf(url, "http://api.openweathermap.org/data/2.5/weather?q=%s&appid=%s&units=metric&lang=zh_tw", encodedName, API_KEY);
+    double t_max = -99, t_min = 99, h_sum = 0; char tomorrow_desc[100] = ""; int count = 0;
+    for (int i = 8; i < 16; i++) {
+        cJSON* item = cJSON_GetArrayItem(list, i); if (!item) break;
+        cJSON* m = cJSON_GetObjectItem(item, "main");
+        double t = cJSON_GetObjectItem(m, "temp")->valuedouble; int h = cJSON_GetObjectItem(m, "humidity")->valueint;
+        if (t > t_max) t_max = t; if (t < t_min) t_min = t;
+        h_sum += h; count++;
+        if (i == 12) UTF8ToANSI(cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(item, "weather"), 0), "description")->valuestring, tomorrow_desc, 100);
+    }
+    info->aqi = getAQI(lat, lon);
+    sprintf(info->tomorrow_brief, "  - ¹w´ú·Å«×  : %.1f ~ %.1f C\r\n  - ¹w´úÀã«×  : ¬ù %.0f %%\r\n  - ¤Ñ®ğª¬ªp  : %s\r\n  - Àô¹Ò¹w¦ô  : ªÅ®ğ«~½è [%s]",
+        t_min, t_max, (count > 0 ? h_sum / count : 0), tomorrow_desc, getAQIDesc(info->aqi));
 
-        curl_free(encodedName); 
+    cJSON_Delete(json); curl_easy_cleanup(curl); free(s.ptr); return 1;
+}
 
-        curl_easy_setopt(curl, CURLOPT_URL, url);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &s);
-        
-        res = curl_easy_perform(curl);
-        
-        if(res != CURLE_OK) {
-            printf("é€£ç·šå¤±æ•— (Error Code: %d)\n", res);
-            printf("åŸå› : %s\n", curl_easy_strerror(res)); 
-            return 0;
+// --- ¤jµøµ¡³ø§i¤¶­± ---
+void ShowWeatherReport(HWND owner, WeatherInfo info) {
+    char report[2048];
+    char timeStr[100];
+    time_t now = time(NULL);
+    struct tm* t = localtime(&now);
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", t);
+
+    sprintf(report, "¡i %s - ¥ş¤è¦ì®ğ¶HÆ[´ú³ø§i ¡j\r\n\r\n"
+        " [ ·í«eÀô¹Ò§Y®É¼Æ¾Ú ]\r\n"
+        " ------------------------------------------\r\n"
+        "  > ²{¦b®ğ·Å  : %.1f C\r\n"
+        "  > ¬Û¹ïÀã«×  : %d %%\r\n"
+        "  > ¤Ñ®ğª¬ªp  : %s\r\n"
+        "  > ªÅ®ğ«~½è  : %s (AQI %d)\r\n\r\n"
+        " [ ©ú¤é®ğ¶H¹w³øÁÍ¶Õ ]\r\n"
+        " ------------------------------------------\r\n"
+        "%s\r\n\r\n"
+        " [ ¨t²ÎÆ[´ú´£¥Ü ]\r\n"
+        " ------------------------------------------\r\n"
+        "  Æ[´ú®É¶¡ : %s\r\n"
+        "  %s",
+        info.city, info.temperature, info.humidity, info.description, getAQIDesc(info.aqi), info.aqi, info.tomorrow_brief,
+        timeStr,
+        (info.aqi > 2 ? " [!] ´£¿ô: °»´ú¨ìªÅ®ğ«~½è¤£¨Î¡A«ØÄ³¨ØÀ¹¤f¸n¡C" : " [+] ´£¥Ü: ¥Ø«eÀô¹Ò¨}¦n¡A¾A¦X¶i¦æ¤á¥~¬¡°Ê¡C"));
+
+    HWND hPop = CreateWindowA("STATIC", "½Ã¬P¤j¼Æ¾Ú®ğ¶H³ø§i", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 920, 800, owner, NULL, NULL, NULL);
+
+    // 1. ¤Ñ®ğ¹Ï§Î (ASCII)
+    char asciiWeather[512], weatherStatus[100];
+    if (strstr(info.description, "´¸") || strstr(info.description, "Clear")) {
+        sprintf(asciiWeather, "      \\   /    \r\n       .-.     \r\n    -- (   ) -- \r\n       `-`     \r\n      /   \\    ");
+        sprintf(weatherStatus, "--- ´¸ ®Ô ---");
+    }
+    else if (strstr(info.description, "«B") || strstr(info.description, "Rain")) {
+        sprintf(asciiWeather, "     .--.      \r\n    (    ).    \r\n   (___(__)    \r\n    ' ' ' '    \r\n   ' ' ' '     ");
+        sprintf(weatherStatus, "--- ¤U «B ---");
+    }
+    else if (strstr(info.description, "¶³") || strstr(info.description, "³±") || strstr(info.description, "Clouds")) {
+        sprintf(asciiWeather, "      .--.     \r\n   .-(    ).   \r\n  (___.__)__)  \r\n               \r\n               ");
+        sprintf(weatherStatus, "--- ¦h ¶³ ---");
+    }
+    else {
+        sprintf(asciiWeather, "               \r\n      .-.      \r\n     (   )     \r\n      `-`      \r\n               ");
+        sprintf(weatherStatus, "--- Æ[´ú¤¤ ---");
+    }
+
+    HWND hWText = CreateWindowA("STATIC", asciiWeather, WS_CHILD | WS_VISIBLE | SS_LEFT, 680, 60, 200, 110, hPop, NULL, NULL, NULL);
+    SendMessage(hWText, WM_SETFONT, (WPARAM)CreateFont(18, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Courier New"), TRUE);
+    HWND hWStatus = CreateWindowA("STATIC", weatherStatus, WS_CHILD | WS_VISIBLE | SS_CENTER, 680, 175, 180, 30, hPop, NULL, NULL, NULL);
+    SendMessage(hWStatus, WM_SETFONT, (WPARAM)CreateFont(20, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei"), TRUE);
+
+    // 2. ªÅ«~¹Ï§Î (¥h°£¥~®ØÂ²¼äª©)
+    char asciiAQI[512], aqiStatus[100];
+    if (info.aqi <= 2) {
+        sprintf(asciiAQI, "      SAFE     \r\n               \r\n     (^_^)     \r\n               \r\n      CLEAN    ");
+        sprintf(aqiStatus, "ª¬ºA: ¨}¦n (+)");
+    }
+    else {
+        sprintf(asciiAQI, "     WARNING   \r\n               \r\n     (!_!)     \r\n               \r\n      POLLUTED ");
+        sprintf(aqiStatus, "ª¬ºA: Äµ§Ù (!)");
+    }
+
+    HWND hAText = CreateWindowA("STATIC", asciiAQI, WS_CHILD | WS_VISIBLE | SS_LEFT, 680, 280, 200, 110, hPop, NULL, NULL, NULL);
+    SendMessage(hAText, WM_SETFONT, (WPARAM)CreateFont(18, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Courier New"), TRUE);
+    HWND hAStatus = CreateWindowA("STATIC", aqiStatus, WS_CHILD | WS_VISIBLE | SS_CENTER, 680, 395, 180, 30, hPop, NULL, NULL, NULL);
+    SendMessage(hAStatus, WM_SETFONT, (WPARAM)CreateFont(20, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei"), TRUE);
+
+    // 3. ¤å¦r¤º®e°Ï
+    HWND hEdit = CreateWindowA("EDIT", report, WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | WS_VSCROLL, 30, 30, 620, 680, hPop, NULL, NULL, NULL);
+    SendMessage(hEdit, WM_SETFONT, (WPARAM)CreateFont(24, 0, 0, 0, FW_NORMAL, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei"), TRUE);
+}
+
+// --- §¹¾ãªº«°¥«²M³æ¸ê®Æ®w ---
+Country worldData[] = {
+    {"¥xÆW (Taiwan)", {
+        {"°ò¶©¥«", "Keelung"},{"¥x¥_¥«", "Taipei"},{"·s¥_¥«", "New Taipei"},{"®ç¶é¥«", "Taoyuan"},
+        {"·s¦Ë¥«", "Hsinchu"},{"·s¦Ë¿¤", "Zhubei"},{"­]®ß¿¤", "Miaoli"},{"¥x¤¤¥«", "Taichung"},
+        {"¹ü¤Æ¿¤", "Changhua"},{"«n§ë¿¤", "Nantou"},{"¶³ªL¿¤", "Douliu"},{"¹Å¸q¥«", "Chiayi"},
+        {"¹Å¸q¿¤", "Taibao"},{"¥x«n¥«", "Tainan"},{"°ª¶¯¥«", "Kaohsiung"},{"«ÌªF¿¤", "Pingtung"},
+        {"©yÄõ¿¤", "Yilan"},{"ªá½¬¿¤", "Hualien"},{"¥xªF¿¤", "Taitung"},{"¼ê´ò¿¤", "Magong"},
+        {"ª÷ªù¿¤", "Jincheng"},{"³s¦¿¿¤ (°¨¯ª)", "Nangan"}
+    }, 22},
+    {"¤é¥» (Japan)", {
+        {"ªF¨Ê", "Tokyo"},{"¤j¨Á", "Osaka"},{"¨Ê³£", "Kyoto"},{"¥_®ü¹D (¥¾·E)", "Sapporo"},
+        {"¨RÃ· (¨ºÅQ)", "Naha"},{"ºÖ©£", "Fukuoka"},{"¦W¥j«Î", "Nagoya"}
+    }, 7},
+    {"¬ü°ê (USA)", {
+        {"¯Ã¬ù", "New York"},{"¬¥§üÁF", "Los Angeles"},{"ÂÂª÷¤s", "San Francisco"},
+        {"¦è¶®¹Ï", "Seattle"},{"ªÛ¥[­ô", "Chicago"},{"ªi¤h¹y", "Boston"}
+    }, 6},
+    {"¼Ú¬w (Europe)", {
+        {"­Û´° (­^°ê)", "London"},{"¤Ú¾¤ (ªk°ê)", "Paris"},{"¬fªL (¼w°ê)", "Berlin"},
+        {"Ã¹°¨ (¸q¤j§Q)", "Rome"},{"°¨¼w¨½ (¦è¯Z¤ú)", "Madrid"},{"ªü©i´µ¯S¤¦ (²üÄõ)", "Amsterdam"}
+    }, 6}
+};
+
+int countryCount = 4; HWND hLabel; HWND hButtons[50]; int currentCountryIdx = -1;
+
+void ClearButtons() { for (int i = 0; i < 50; i++) { if (hButtons[i]) { DestroyWindow(hButtons[i]); hButtons[i] = NULL; } } }
+void ShowCountryMenu(HWND hwnd) {
+    ClearButtons(); currentCountryIdx = -1; SetWindowTextA(hLabel, "½Ã¬P¥ş¤è¦ì¤Ñ®ğÆ[´ú¨t²Î - ½Ğ¿ï¾Ü°Ï°ì");
+    for (int i = 0; i < countryCount; i++) { hButtons[i] = CreateWindowA("BUTTON", worldData[i].countryName, WS_TABSTOP | WS_VISIBLE | WS_CHILD, 100, 80 + (i * 70), 600, 50, hwnd, (HMENU)(100 + i), NULL, NULL); }
+}
+void ShowCityMenu(HWND hwnd, int countryIdx) {
+    ClearButtons(); currentCountryIdx = countryIdx;
+    for (int i = 0; i < worldData[countryIdx].cityCount; i++) {
+        hButtons[i] = CreateWindowA("BUTTON", worldData[countryIdx].cities[i].nameTW, WS_TABSTOP | WS_VISIBLE | WS_CHILD, 50 + (i % 3) * 235, 80 + (i / 3) * 65, 220, 50, hwnd, (HMENU)(200 + i), NULL, NULL);
+    }
+    hButtons[49] = CreateWindowA("BUTTON", "<- ªğ¦^¤W¤@¼h", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 100, 750, 600, 55, hwnd, (HMENU)999, NULL, NULL);
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE:
+        hLabel = CreateWindowA("STATIC", "Åwªï¨Ï¥Î½Ã¬P¤j¼Æ¾ÚÆ[´ú¯¸", WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 20, 800, 40, hwnd, NULL, NULL, NULL);
+        SendMessage(hLabel, WM_SETFONT, (WPARAM)CreateFont(28, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei"), TRUE);
+        ShowCountryMenu(hwnd); break;
+    case WM_COMMAND: {
+        int id = LOWORD(wParam);
+        if (id == 999) ShowCountryMenu(hwnd);
+        else if (id >= 100 && id < 100 + countryCount) ShowCityMenu(hwnd, id - 100);
+        else if (id >= 200 && currentCountryIdx != -1) {
+            City c = worldData[currentCountryIdx].cities[id - 200];
+            WeatherInfo info; SetWindowTextA(hLabel, "¼Æ¾Ú¦P¨B¤¤...");
+            if (getWeather(c.nameAPI, c.nameTW, &info)) { ShowWeatherReport(hwnd, info); SetWindowTextA(hLabel, "Æ[´ú³ø§i§¹¦¨¡C"); }
         }
-
-        cJSON *json = cJSON_Parse(s.ptr);
-        if (json == NULL) return 0;
-
-        cJSON *cod = cJSON_GetObjectItem(json, "cod");
-        int statusCode = 0;
-        if (cJSON_IsNumber(cod)) statusCode = cod->valueint;
-        else if (cJSON_IsString(cod)) statusCode = atoi(cod->valuestring);
-
-        if (statusCode != 200) {
-             printf(">> æŸ¥è©¢å¤±æ•— (Code: %d) - è«‹æª¢æŸ¥ API Keyã€‚\n", statusCode);
-             return 0;
-        }
-
-        cJSON *main_obj = cJSON_GetObjectItem(json, "main");
-        cJSON *temp = cJSON_GetObjectItem(main_obj, "temp");
-        cJSON *humidity = cJSON_GetObjectItem(main_obj, "humidity");
-        cJSON *weather_arr = cJSON_GetObjectItem(json, "weather");
-        cJSON *weather_item = cJSON_GetArrayItem(weather_arr, 0);
-        cJSON *desc = cJSON_GetObjectItem(weather_item, "description");
-
-        strcpy(info->city, displayName);
-        info->temperature = temp->valuedouble;
-        info->humidity = humidity->valueint;
-        strcpy(info->description, desc->valuestring);
-
-        cJSON_Delete(json);
-        curl_easy_cleanup(curl);
-        free(s.ptr);
-        return 1;
+        break;
+    }
+    case WM_DESTROY: PostQuitMessage(0); break;
+    default: return DefWindowProcA(hwnd, msg, wParam, lParam);
     }
     return 0;
 }
 
-void saveHistory(WeatherInfo info) {
-    FILE *fp = fopen("history.txt", "a");
-    if (fp != NULL) {
-        fprintf(fp, "%s | %.1fÂ°C | %s\n", info.city, info.temperature, info.description);
-        fclose(fp);
-    }
-}
-
 int main() {
-    SetConsoleOutputCP(65001);
-
-    Country worldData[] = {
-        // 1. å°ç£ (Taiwan)
-        {
-            "å°ç£ (Taiwan)", 
-            {
-                {"åŸºéš†å¸‚", "Keelung"},
-                {"å°åŒ—å¸‚", "Taipei"},
-                {"æ–°åŒ—å¸‚", "New Taipei"},
-                {"æ¡ƒåœ’å¸‚", "Taoyuan"},
-                {"æ–°ç«¹å¸‚", "Hsinchu"},
-                {"æ–°ç«¹ç¸£", "Zhubei"},
-                {"è‹—æ —ç¸£", "Miaoli"},
-                {"å°ä¸­å¸‚", "Taichung"},
-                {"å½°åŒ–ç¸£", "Changhua"},
-                {"å—æŠ•ç¸£", "Nantou"},
-                {"é›²æ—ç¸£", "Douliu"},
-                {"å˜‰ç¾©å¸‚", "Chiayi"},
-                {"å˜‰ç¾©ç¸£", "Taibao"},
-                {"å°å—å¸‚", "Tainan"},
-                {"é«˜é›„å¸‚", "Kaohsiung"},
-                {"å±æ±ç¸£", "Pingtung"},
-                {"å®œè˜­ç¸£", "Yilan"},
-                {"èŠ±è“®ç¸£", "Hualien"},
-                {"å°æ±ç¸£", "Taitung"},
-                {"æ¾æ¹–ç¸£", "Magong"},
-                {"é‡‘é–€ç¸£", "Jincheng"},
-                {"é€£æ±Ÿç¸£ (é¦¬ç¥–)", "Nangan"}
-            },
-            22
-        },
-        // 2. æ—¥æœ¬ (Japan)
-        {
-            "æ—¥æœ¬ (Japan)",
-            {
-                {"æ±äº¬", "Tokyo"},
-                {"å¤§é˜ª", "Osaka"},
-                {"äº¬éƒ½", "Kyoto"},
-                {"åŒ—æµ·é“ (æœ­å¹Œ)", "Sapporo"},
-                {"æ²–ç¹© (é‚£éœ¸)", "Naha"},
-                {"ç¦å²¡", "Fukuoka"},
-                {"åå¤å±‹", "Nagoya"}
-            },
-            7
-        },
-        // 3. ç¾åœ‹ (USA)
-        {
-            "ç¾åœ‹ (USA)",
-            {
-                {"ç´ç´„", "New York"},
-                {"æ´›æ‰ç£¯", "Los Angeles"},
-                {"èˆŠé‡‘å±±", "San Francisco"},
-                {"è¥¿é›…åœ–", "Seattle"},
-                {"èŠåŠ å“¥", "Chicago"},
-                {"æ³¢å£«é “", "Boston"}
-            },
-            6
-        },
-        // 4. æ­æ´²åœ°å€ (Europe)
-        {
-            "æ­æ´² (Europe)",
-            {
-                {"å€«æ•¦ (è‹±åœ‹)", "London"},
-                {"å·´é» (æ³•åœ‹)", "Paris"},
-                {"æŸæ— (å¾·åœ‹)", "Berlin"},
-                {"ç¾…é¦¬ (ç¾©å¤§åˆ©)", "Rome"},
-                {"é¦¬å¾·é‡Œ (è¥¿ç­ç‰™)", "Madrid"},
-                {"é˜¿å§†æ–¯ç‰¹ä¸¹ (è·è˜­)", "Amsterdam"}
-            },
-            6
-        }
-    };
-    
-    int countryCount = sizeof(worldData) / sizeof(worldData[0]);
-    int countryChoice, cityChoice;
-    WeatherInfo currentData;
-
-    printf("=== å¤©æ°£è§€æ¸¬ç³»çµ± (Global Weather System) ===\n");
-
-    while(1) { 
-        printf("\nè«‹é¸æ“‡åœ‹å®¶/åœ°å€:\n");
-        for(int i=0; i<countryCount; i++) {
-            printf("%d. %s\n", i+1, worldData[i].countryName);
-        }
-        printf("0. é›¢é–‹ç³»çµ±\n");
-        printf("è¼¸å…¥é¸é …: ");
-        
-        if (scanf("%d", &countryChoice) != 1) {
-            while(getchar() != '\n');
-            continue;
-        }
-
-        if (countryChoice == 0) break; 
-
-        if (countryChoice > 0 && countryChoice <= countryCount) {
-            
-            Country selectedCountry = worldData[countryChoice - 1];
-
-            while(1) {
-                printf("\n-- æ‚¨é¸æ“‡äº† [%s] --\n", selectedCountry.countryName);
-                printf("è«‹é¸æ“‡åŸå¸‚:\n");
-                for(int j=0; j<selectedCountry.cityCount; j++) {
-                    printf("%2d. %-14s", j+1, selectedCountry.cities[j].nameTW);
-                    if ((j+1) % 2 == 0) printf("\n");
-                }
-                if (selectedCountry.cityCount % 2 != 0) printf("\n"); 
-                
-                printf(" 0. è¿”å›ä¸Šä¸€é \n");
-                printf("è¼¸å…¥é¸é …: ");
-
-                if (scanf("%d", &cityChoice) != 1) {
-                    while(getchar() != '\n');
-                    continue;
-                }
-
-                if (cityChoice == 0) break; 
-
-                if (cityChoice > 0 && cityChoice <= selectedCountry.cityCount) {
-                    City targetCity = selectedCountry.cities[cityChoice - 1];
-
-                    printf("\næ­£åœ¨é€£ç·šè‡³è¡›æ˜ŸæŸ¥è©¢ %s ...\n", targetCity.nameTW);
-
-                    if (getWeather(targetCity.nameAPI, targetCity.nameTW, &currentData)) {
-                        printf("\n============================\n");
-                        printf(" åœ°å€: %s\n", currentData.city);
-                        printf(" æ°£æº«: %.1f Â°C\n", currentData.temperature);
-                        printf(" æ¿•åº¦: %d %%\n", currentData.humidity);
-                        printf(" ç¾æ³: %s\n", currentData.description);
-                        printf("============================\n");
-                        saveHistory(currentData);
-                        
-                        printf("\næŒ‰ Enter ç¹¼çºŒ...");
-                        getchar(); getchar(); 
-                    }
-                } else {
-                    printf("ç„¡æ•ˆçš„åŸå¸‚é¸é …ã€‚\n");
-                }
-            } 
-        } else {
-            printf("ç„¡æ•ˆçš„åœ‹å®¶é¸é …ã€‚\n");
-        }
-    } 
-
-    printf("ç³»çµ±å·²é—œé–‰ã€‚\n");
+    WNDCLASSA wc = { 0 }; wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandle(NULL); wc.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH); wc.lpszClassName = "WeatherFinal"; wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    RegisterClassA(&wc);
+    HWND hwnd = CreateWindowA("WeatherFinal", "½Ã¬P¥ş¤è¦ì¤Ñ®ğÆ[´ú¨t²Î", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 850, 880, NULL, NULL, wc.hInstance, NULL);
+    MSG msg; while (GetMessageA(&msg, NULL, 0, 0)) { TranslateMessage(&msg); DispatchMessageA(&msg); }
     return 0;
 }
