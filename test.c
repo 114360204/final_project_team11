@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,31 +7,25 @@
 #include "cJSON.h" 
 #include <curl/curl.h>
 #include "WeatherEngine.h"
+#include "WeatherUI.h" 
 
 #pragma comment(linker,"\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
-// --- 顏色定義 ---
 #define COLOR_BG RGB(26, 26, 46) 
 #define COLOR_TEXT RGB(255, 255, 255) 
-#define COLOR_ACCENT RGB(22, 33, 62) 
 
-int langMode = 0;
+HBRUSH hBrushBg;
 const char* API_KEY = "2fa80dc7ec8be3fac297f88afd028de9";
-HWND hLabel, hButtons[50], hLangBtns[3], hTimeLabel, hGroupInfo;
-int currentCountryIdx = -1;
-HBRUSH hBrushBg; 
 
-const char* GetUIText(int id) {
-    const char* texts[2][18] = {
-        {"衛星天氣觀測系統", "數據同步中...", "現在氣溫", "相對濕度", "天氣狀況", "空氣品質", "明日氣象預報趨勢", "關閉報告並返回選單", "觀測時間", "<- 返回上一層", "請選擇區域", "良好", "警戒", "狀態", "預測溫度", "預測濕度", "當天外出建議", "退出系統"},
-        {"Weather System", "Syncing...", "Temperature", "Humidity", "Condition", "Air Quality", "Tomorrow's Forecast", "Close and Return", "Observed at", "<- Back", "Select Region", "Good", "Warning", "Status", "Forecast Temp", "Forecast Humid", "Outdoor Suggestion", "Exit"}
-    };
-    return texts[langMode][id];
-}
+// 引用 WeatherUI.c 裡面的全域變數
+extern int langMode;
+extern Country worldData[];
+extern int currentCountryIdx;
 
-// -- 網路與 API 邏輯 ---
+// --- 網路功能實作 ---
 struct string { char* ptr; size_t len; };
 void init_string(struct string* s) { s->len = 0; s->ptr = malloc(1); s->ptr[0] = '\0'; }
+
 size_t writefunc(void* ptr, size_t size, size_t nmemb, struct string* s) {
     size_t new_len = s->len + size * nmemb;
     s->ptr = realloc(s->ptr, new_len + 1);
@@ -38,6 +33,7 @@ size_t writefunc(void* ptr, size_t size, size_t nmemb, struct string* s) {
     s->ptr[new_len] = '\0'; s->len = new_len;
     return size * nmemb;
 }
+
 void UTF8ToANSI(char* src, char* dest, int destSize) {
     wchar_t wStr[512];
     MultiByteToWideChar(CP_UTF8, 0, src, -1, wStr, 512);
@@ -60,11 +56,12 @@ int getAQI(double lat, double lon) {
 int getWeather(char* searchName, char* displayName, WeatherInfo* info) {
     CURL* curl; struct string s; init_string(&s); curl = curl_easy_init();
     if (!curl) return 0;
-    
+
     char encodedName[100]; strcpy(encodedName, searchName);
-    for(int i=0; encodedName[i]; i++) if(encodedName[i]==' ') encodedName[i]='+';
+    for (int i = 0; encodedName[i]; i++) if (encodedName[i] == ' ') encodedName[i] = '+';
 
     const char* langCodes[] = { "zh_tw", "en" };
+
     char url[512]; sprintf(url, "http://api.openweathermap.org/data/2.5/forecast?q=%s&appid=%s&units=metric&lang=%s", encodedName, API_KEY, langCodes[langMode]);
     curl_easy_setopt(curl, CURLOPT_URL, url); curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc); curl_easy_setopt(curl, CURLOPT_WRITEDATA, &s);
     if (curl_easy_perform(curl) != CURLE_OK) { free(s.ptr); curl_easy_cleanup(curl); return 0; }
@@ -97,58 +94,7 @@ int getWeather(char* searchName, char* displayName, WeatherInfo* info) {
     cJSON_Delete(json); curl_easy_cleanup(curl); free(s.ptr); return 1;
 }
 
-// --- 城市數據庫 ---
-Country worldData[] = {
-    {"台灣 (Taiwan)", "Taiwan", {
-        {"基隆市", "Keelung"},{"台北市", "Taipei"},{"新北市", "New Taipei"},{"桃園市", "Taoyuan"},
-        {"新竹市", "Hsinchu"},{"新竹縣", "Zhubei"},{"苗栗縣", "Miaoli"},{"台中市", "Taichung"},
-        {"彰化縣", "Changhua"},{"南投縣", "Nantou"},{"雲林縣", "Douliu"},{"嘉義市", "Chiayi"},
-        {"嘉義縣", "Taibao"},{"台南市", "Tainan"},{"高雄市", "Kaohsiung"},{"屏東縣", "Pingtung"},
-        {"宜蘭縣", "Yilan"},{"花蓮縣", "Hualien"},{"台東縣", "Taitung"},{"澎湖縣", "Magong"},
-        {"金門縣", "Jincheng"},{"連江縣 (馬祖)", "Nangan"}
-    }, 22},
-    {"日本 (Japan)", "Japan", {
-        {"東京", "Tokyo"},{"大阪", "Osaka"},{"京都", "Kyoto"},{"北海道 (札幌)", "Sapporo"},
-        {"沖繩 (那霸)", "Naha"},{"福岡", "Fukuoka"},{"名古屋", "Nagoya"}
-    }, 7},
-    {"美國 (USA)", "USA", {
-        {"紐約", "New York"},{"洛杉磯", "Los Angeles"},{"舊金山", "San Francisco"},
-        {"西雅圖", "Seattle"},{"芝加哥", "Chicago"},{"波士頓", "Boston"}
-    }, 6},
-    {"歐洲 (Europe)", "Europe", {
-        {"倫敦 (英國)", "London"},{"巴黎 (法國)", "Paris"},{"柏林 (德國)", "Berlin"},
-        {"羅馬 (義大利)", "Rome"},{"馬德里 (西班牙)", "Madrid"},{"阿姆斯特丹 (荷蘭)", "Amsterdam"}
-    }, 6}
-};
-
-void ClearButtons() { for (int i = 0; i < 50; i++) if (hButtons[i]) { DestroyWindow(hButtons[i]); hButtons[i] = NULL; } }
-
-void ShowCountryMenu(HWND hwnd) {
-    ClearButtons(); currentCountryIdx = -1;
-    SetWindowTextA(hLabel, GetUIText(10));
-    HFONT hFontBtn = CreateFont(22, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei UI");
-    for (int i = 0; i < 4; i++) {
-        const char* name = (langMode == 0) ? worldData[i].countryTW : worldData[i].countryEN;
-        hButtons[i] = CreateWindowA("BUTTON", name, WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_FLAT, 100, 80 + (i * 70), 600, 50, hwnd, (HMENU)(100 + i), NULL, NULL);
-        SendMessage(hButtons[i], WM_SETFONT, (WPARAM)hFontBtn, TRUE);
-    }
-    ShowWindow(hGroupInfo, SW_SHOW);
-}
-
-void ShowCityMenu(HWND hwnd, int countryIdx) {
-    ClearButtons(); currentCountryIdx = countryIdx;
-    ShowWindow(hGroupInfo, SW_HIDE);
-    HFONT hFontBtn = CreateFont(18, 0, 0, 0, FW_NORMAL, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei UI");
-    for (int i = 0; i < worldData[countryIdx].cityCount; i++) {
-        const char* name = (langMode == 0) ? worldData[countryIdx].cities[i].nameTW : worldData[countryIdx].cities[i].nameEN;
-        hButtons[i] = CreateWindowA("BUTTON", name, WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_FLAT, 50 + (i % 3) * 235, 80 + (i / 3) * 65, 220, 50, hwnd, (HMENU)(200 + i), NULL, NULL);
-        SendMessage(hButtons[i], WM_SETFONT, (WPARAM)hFontBtn, TRUE);
-    }
-    hButtons[49] = CreateWindowA("BUTTON", GetUIText(9), WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_FLAT, 100, 750, 600, 55, hwnd, (HMENU)999, NULL, NULL);
-    SendMessage(hButtons[49], WM_SETFONT, (WPARAM)hFontBtn, TRUE);
-}
-
-//報告視窗邏輯
+// --- 報告視窗邏輯 ---
 LRESULT CALLBACK ReportWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_COMMAND && LOWORD(wParam) == 888) { DestroyWindow(hwnd); return 0; }
     if (msg == WM_CLOSE) { DestroyWindow(hwnd); return 0; }
@@ -168,21 +114,39 @@ void ShowWeatherReport(HWND owner, WeatherInfo info) {
     WNDCLASSA rwc = { 0 }; rwc.lpfnWndProc = ReportWndProc; rwc.hInstance = GetModuleHandle(NULL); rwc.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH); rwc.lpszClassName = "FinalReportWinV12"; RegisterClassA(&rwc);
     HWND hPop = CreateWindowA("FinalReportWinV12", GetUIText(0), WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 920, 850, owner, NULL, NULL, NULL);
 
-    char weatherStatus[50], aqiStatus[50], asciiWeather[512], asciiAQI[512];
+    char weatherStatus[50], aqiStatus[50];
     sprintf(weatherStatus, "--- %s ---", info.description);
     sprintf(aqiStatus, "%s: %s", GetUIText(13), info.aqi <= 2 ? GetUIText(11) : GetUIText(12));
 
-    if (strstr(info.description, "晴")) sprintf(asciiWeather, "      \\   /    \r\n       .-.     \r\n    -- (   ) -- \r\n       `-`     \r\n      /   \\    ");
-    else if (strstr(info.description, "雨")) sprintf(asciiWeather, "     .--.      \r\n    (    ).    \r\n   (___(__)    \r\n    ' ' ' '    \r\n   ' ' ' '     ");
-    else sprintf(asciiWeather, "      .--.     \r\n   .-(    ).   \r\n  (___.__)__)  \r\n               \r\n               ");
+    // --- 圖片載入邏輯 ---
+    const char* weatherImgFile = "cloud.bmp";
+    if (strstr(info.description, "晴")) weatherImgFile = "sun.bmp";
+    else if (strstr(info.description, "雨")) weatherImgFile = "rain.bmp";
 
-    if (info.aqi <= 2) sprintf(asciiAQI, "      SAFE     \r\n               \r\n     (^_^)     \r\n               \r\n      CLEAN    ");
-    else sprintf(asciiAQI, "     WARNING   \r\n               \r\n     (!_!)     \r\n               \r\n      POLLUTED ");
+    const char* aqiImgFile = (info.aqi <= 2) ? "safe.bmp" : "warning.bmp";
 
-    HWND hWImg = CreateWindowA("STATIC", asciiWeather, WS_CHILD | WS_VISIBLE | SS_LEFT, 680, 50, 200, 110, hPop, NULL, NULL, NULL);
-    SendMessage(hWImg, WM_SETFONT, (WPARAM)CreateFont(18, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Courier New"), TRUE);
-    HWND hAImg = CreateWindowA("STATIC", asciiAQI, WS_CHILD | WS_VISIBLE | SS_LEFT, 680, 260, 200, 110, hPop, NULL, NULL, NULL);
-    SendMessage(hAImg, WM_SETFONT, (WPARAM)CreateFont(18, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Courier New"), TRUE);
+    int imgW = 110;
+    int imgH = 110;
+    HANDLE hBmpWeather = LoadImageA(NULL, weatherImgFile, IMAGE_BITMAP, imgW, imgH, LR_LOADFROMFILE);
+    HANDLE hBmpAQI = LoadImageA(NULL, aqiImgFile, IMAGE_BITMAP, imgW, imgH, LR_LOADFROMFILE);
+
+    // [除錯程式碼] 找不到圖片時會跳出視窗
+    if (hBmpWeather == NULL) {
+        char path[MAX_PATH];
+        GetCurrentDirectoryA(MAX_PATH, path);
+        char msg[1024];
+        sprintf(msg, "找不到天氣圖片: %s\n\n程式正在這個路徑找圖片:\n%s\n\n錯誤代碼: %d", weatherImgFile, path, GetLastError());
+        MessageBoxA(owner, msg, "圖片讀取錯誤", MB_OK | MB_ICONERROR);
+    }
+    if (hBmpAQI == NULL) {
+        // 如果 AQI 圖也找不到，這裡可以再跳一次，或不管它
+    }
+
+    HWND hWImg = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE, 720, 50, imgW, imgH, hPop, NULL, NULL, NULL);
+    SendMessage(hWImg, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)hBmpWeather);
+
+    HWND hAImg = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE, 720, 260, imgW, imgH, hPop, NULL, NULL, NULL);
+    SendMessage(hAImg, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)hBmpAQI);
 
     HWND hWText = CreateWindowA("STATIC", weatherStatus, WS_CHILD | WS_VISIBLE | SS_CENTER, 680, 165, 200, 30, hPop, NULL, NULL, NULL);
     SendMessage(hWText, WM_SETFONT, (WPARAM)CreateFont(18, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei UI"), TRUE);
@@ -195,71 +159,44 @@ void ShowWeatherReport(HWND owner, WeatherInfo info) {
     SendMessage(hBack, WM_SETFONT, (WPARAM)CreateFont(24, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei UI"), TRUE);
 }
 
-//主視窗程序
+// --- 主視窗程序 ---
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    const int MIN_W = 850;
+    const int MIN_H = 880;
+    const double ASPECT_RATIO = (double)MIN_W / MIN_H;
+
     switch (msg) {
-    case WM_SIZE: {
-        int newWidth = LOWORD(lParam);
-        int newHeight = HIWORD(lParam);
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+        mmi->ptMinTrackSize.x = MIN_W;
+        mmi->ptMinTrackSize.y = MIN_H;
+        return 0;
+    }
+    case WM_SIZING: {
+        RECT* pRect = (RECT*)lParam;
+        int width = pRect->right - pRect->left;
+        int height = pRect->bottom - pRect->top;
 
-        if (hLabel) {
-            MoveWindow(hLabel, 0, 20, newWidth, 40, TRUE);
+        switch (wParam) {
+        case WMSZ_LEFT: case WMSZ_RIGHT:
+            height = (int)(width / ASPECT_RATIO); pRect->bottom = pRect->top + height; break;
+        case WMSZ_TOP: case WMSZ_BOTTOM:
+            width = (int)(height * ASPECT_RATIO); pRect->right = pRect->left + width; break;
+        case WMSZ_TOPLEFT: case WMSZ_TOPRIGHT: case WMSZ_BOTTOMLEFT: case WMSZ_BOTTOMRIGHT:
+            height = (int)(width / ASPECT_RATIO); pRect->bottom = pRect->top + height; break;
         }
-
-        int btnWidth = 600;
-        if (newWidth < 600) btnWidth = newWidth - 100;
-        int startX = (newWidth - btnWidth) / 2;
-
-        for (int i = 0; i < 4; i++) {
-            if (hButtons[i] && currentCountryIdx == -1) { 
-                MoveWindow(hButtons[i], startX, 80 + (i * 70), btnWidth, 50, TRUE);
-            }
-        }
-
-        if (currentCountryIdx != -1) {
-            int cityBtnW = (newWidth - 100) / 3; 
-            for (int i = 0; i < 30; i++) {
-                if (hButtons[i]) {
-                    MoveWindow(hButtons[i], 50 + (i % 3) * (cityBtnW + 15), 80 + (i / 3) * 65, cityBtnW, 50, TRUE);
-                }
-            }
-            if (hButtons[49]) MoveWindow(hButtons[49], startX, newHeight - 130, btnWidth, 55, TRUE);
-        }
-        if (hGroupInfo) {
-            MoveWindow(hGroupInfo, startX, 380, btnWidth, 230, TRUE);
-        }
-        int langBtnX = (newWidth - 490) / 2;
-        for (int i = 0; i < 3; i++) {
-            if (hLangBtns[i]) MoveWindow(hLangBtns[i], langBtnX + (i * 170), newHeight - 230, 150, 45, TRUE);
-        }
-        if (hTimeLabel) MoveWindow(hTimeLabel, 0, newHeight - 165, newWidth, 30, TRUE);
-        InvalidateRect(hwnd, NULL, TRUE);
+        return TRUE;
+    }
+    case WM_SIZE:
+        UpdateLayout(hwnd, LOWORD(lParam), HIWORD(lParam));
         break;
-    }    
     case WM_CREATE:
         hBrushBg = CreateSolidBrush(COLOR_BG);
-        hLabel = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 20, 800, 40, hwnd, NULL, NULL, NULL);
-        SendMessage(hLabel, WM_SETFONT, (WPARAM)CreateFont(32, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei UI"), TRUE);
-
-        hGroupInfo = CreateWindowA("BUTTON", "開發小組資訊 / Team Info", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 100, 380, 600, 230, hwnd, NULL, NULL, NULL);
-        SendMessage(hGroupInfo, WM_SETFONT, (WPARAM)CreateFont(20, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei UI"), TRUE);
-        
-        const char* teamDetail = "小組 11\r\n\r\n114360204 柯冠義\r\n114360218 吳智揚\r\n114360204 謝宇豐";
-        HWND hTeamText = CreateWindowA("STATIC", teamDetail, WS_CHILD | WS_VISIBLE | SS_CENTER, 20, 45, 560, 170, hGroupInfo, NULL, NULL, NULL);
-        SendMessage(hTeamText, WM_SETFONT, (WPARAM)CreateFont(26, 0, 0, 0, FW_NORMAL, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei UI"), TRUE);
-
-        HFONT hFontBtn = CreateFont(20, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Microsoft JhengHei UI");
-        hLangBtns[0] = CreateWindowA("BUTTON", "繁體中文", WS_CHILD | WS_VISIBLE | BS_FLAT, 150, 650, 150, 45, hwnd, (HMENU)700, NULL, NULL);
-        hLangBtns[1] = CreateWindowA("BUTTON", "English", WS_CHILD | WS_VISIBLE | BS_FLAT, 320, 650, 150, 45, hwnd, (HMENU)701, NULL, NULL);
-        hLangBtns[2] = CreateWindowA("BUTTON", "Exit / 退出", WS_CHILD | WS_VISIBLE | BS_FLAT, 490, 650, 150, 45, hwnd, (HMENU)702, NULL, NULL);
-        for(int i=0; i<3; i++) SendMessage(hLangBtns[i], WM_SETFONT, (WPARAM)hFontBtn, TRUE);
-
-        hTimeLabel = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_CENTER, 0, 715, 800, 30, hwnd, NULL, NULL, NULL);
-        SendMessage(hTimeLabel, WM_SETFONT, (WPARAM)CreateFont(22, 0, 0, 0, FW_BOLD, 0, 0, 0, 1, 0, 0, 0, 0, "Consolas"), TRUE);
+        InitUI(hwnd);
         SetTimer(hwnd, 1, 1000, NULL);
-        ShowCountryMenu(hwnd); break;
-
-    case WM_CTLCOLORSTATIC: { // 設定文字顏色為白色，背景透明
+        ShowCountryMenu(hwnd);
+        break;
+    case WM_CTLCOLORSTATIC: {
         HDC hdc = (HDC)wParam;
         SetTextColor(hdc, COLOR_TEXT);
         SetBkMode(hdc, TRANSPARENT);
@@ -278,7 +215,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         else if (id >= 100 && id < 104) ShowCityMenu(hwnd, id - 100);
         else if (id >= 200 && currentCountryIdx != -1) {
             City c = worldData[currentCountryIdx].cities[id - 200];
-            WeatherInfo info; if (getWeather(c.nameEN, (char*)(langMode ? c.nameEN : c.nameTW), &info)) ShowWeatherReport(hwnd, info);
+            WeatherInfo info;
+            if (getWeather(c.nameEN, (char*)(langMode ? c.nameEN : c.nameTW), &info))
+                ShowWeatherReport(hwnd, info);
         }
         break;
     }
@@ -288,13 +227,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return 0;
 }
 
-// --- 視窗入口 ---
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    WNDCLASSA wc = { 0 }; 
-    wc.lpfnWndProc = WndProc; 
-    wc.hInstance = hInstance; 
-    wc.hbrBackground = CreateSolidBrush(COLOR_BG); // 設定背景色
-    wc.lpszClassName = "FinalUnifiedWeatherV12"; 
+    WNDCLASSA wc = { 0 };
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.hbrBackground = CreateSolidBrush(COLOR_BG);
+    wc.lpszClassName = "FinalUnifiedWeatherV12";
     RegisterClassA(&wc);
     HWND hwnd = CreateWindowA("FinalUnifiedWeatherV12", "Satellite Weather System", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, 850, 880, NULL, NULL, hInstance, NULL);
     MSG msg; while (GetMessageA(&msg, NULL, 0, 0)) { TranslateMessage(&msg); DispatchMessageA(&msg); }
