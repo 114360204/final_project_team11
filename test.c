@@ -17,7 +17,7 @@
 HBRUSH hBrushBg;
 const char* API_KEY = "2fa80dc7ec8be3fac297f88afd028de9";
 
-// まノ WeatherUI.c 柑办跑计
+// まノ WeatherUI.c 柑办跑计 ㄧΑ畐
 extern int langMode;
 extern Country worldData[];
 extern int currentCountryIdx;
